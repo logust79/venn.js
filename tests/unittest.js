@@ -27,7 +27,7 @@ tape("greedyLayout", function(test) {
                  {sets: [1,3], size:0.07597023820511245},
                  {sets: [2,3], size:0}];
 
-    var circles = venn.greedyLayout(areas)
+    var circles = venn.greedyLayout(areas),
         loss = venn.lossFunction(circles, areas);
     nearlyEqual(test, loss, 0);
 
@@ -59,26 +59,6 @@ tape("greedyLayout", function(test) {
     circles = venn.greedyLayout(areas);
     loss = venn.lossFunction(circles, areas);
     nearlyEqual(test, loss, 0);
-    test.end();
-});
-
-
-tape("fmin", function(test) {
-    // minimize simple 1 diminesial quadratic
-    var loss = function(values) { return (values[0] - 10) * (values[0] - 10); }
-    var solution = venn.fmin(loss, [0], {minErrorDelta:1e-10}).solution;
-    nearlyEqual(test, solution[0], 10, 1e-10);
-    test.end();
-});
-
-tape("minimizeConjugateGradient", function(test) {
-    // minimize simple 1 diminesial quadratic
-    var loss = function(x, xprime) { 
-        xprime[0] = 2 * (x[0] - 10);
-        return (x[0] - 10) * (x[0] - 10); 
-    }
-    var solution = venn.minimizeConjugateGradient(loss, [0]).x;
-    nearlyEqual(test, solution[0], 10, 1e-10);
     test.end();
 });
 
@@ -160,7 +140,7 @@ tape("circleCircleIntersection", function(test) {
         }
 
         return points;
-    }
+    };
 
     // fully contained
     test.equal(venn.circleCircleIntersection({x:0, y:3, radius:10},
@@ -220,6 +200,14 @@ tape("randomFailures", function(test) {
         area = venn.intersectionArea(circles);
 
     test.ok(Math.abs(area - 0.0008914) < 0.0001, area);
+
+    circles = [{"x":9.154829758385864,"y":0,"size":226,"radius":8.481629223064205},
+               {"x":5.806079662851866,"y":7.4438023223126795,"size":733,"radius":15.274853405932202},
+               {"x":9.484491297623553,"y":4.064806303558571,"size":332,"radius":10.280023453913834},
+               {"x":10.56492833796709,"y":3.0723147554880175,"size":244,"radius":8.812923024107548}];
+
+    area = venn.intersectionArea(circles);
+    nearlyEqual(test, area, 10.963620);
     test.end();
 });
 
@@ -236,9 +224,9 @@ tape("computeTextCentre", function(test) {
 
 tape("normalizeSolution", function(test) {
     // test two circles that are far apart
-    var solution = [{x: 0, y: 0, radius: .5}, 
+    var solution = [{x: 0, y: 0, radius: .5},
                     {x: 1e10, y:0, radius: 1.5}];
-    
+
     // should be placed close together
     var normalized = venn.normalizeSolution(solution);
     // distance should be 2, but we space things out

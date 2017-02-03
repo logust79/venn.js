@@ -1,317 +1,8 @@
 (function (global, factory) {
-    typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
-    typeof define === 'function' && define.amd ? define('venn', ['exports'], factory) :
-    factory((global.venn = {}));
-}(this, function (exports) { 'use strict';
-
-    /** finds the zeros of a function, given two starting points (which must
-     * have opposite signs */
-    function bisect(f, a, b, parameters) {
-        parameters = parameters || {};
-        var maxIterations = parameters.maxIterations || 100,
-            tolerance = parameters.tolerance || 1e-10,
-            fA = f(a),
-            fB = f(b),
-            delta = b - a;
-
-        if (fA * fB > 0) {
-            throw "Initial bisect points must have opposite signs";
-        }
-
-        if (fA === 0) return a;
-        if (fB === 0) return b;
-
-        for (var i = 0; i < maxIterations; ++i) {
-            delta /= 2;
-            var mid = a + delta,
-                fMid = f(mid);
-
-            if (fMid * fA >= 0) {
-                a = mid;
-            }
-
-            if ((Math.abs(delta) < tolerance) || (fMid === 0)) {
-                return mid;
-            }
-        }
-        return a + delta;
-    }
-
-    // need some basic operations on vectors, rather than adding a dependency,
-    // just define here
-    function zeros(x) { var r = new Array(x); for (var i = 0; i < x; ++i) { r[i] = 0; } return r; }
-    function zerosM(x,y) { return zeros(x).map(function() { return zeros(y); }); }
-
-    function dot(a, b) {
-        var ret = 0;
-        for (var i = 0; i < a.length; ++i) {
-            ret += a[i] * b[i];
-        }
-        return ret;
-    }
-
-    function norm2(a)  {
-        return Math.sqrt(dot(a, a));
-    }
-
-    function multiplyBy(a, c) {
-        for (var i = 0; i < a.length; ++i) {
-            a[i] *= c;
-        }
-    }
-
-    function weightedSum(ret, w1, v1, w2, v2) {
-        for (var j = 0; j < ret.length; ++j) {
-            ret[j] = w1 * v1[j] + w2 * v2[j];
-        }
-    }
-
-    /** minimizes a function using the downhill simplex method */
-    function fmin(f, x0, parameters) {
-        parameters = parameters || {};
-
-        var maxIterations = parameters.maxIterations || x0.length * 200,
-            nonZeroDelta = parameters.nonZeroDelta || 1.1,
-            zeroDelta = parameters.zeroDelta || 0.001,
-            minErrorDelta = parameters.minErrorDelta || 1e-6,
-            rho = parameters.rho || 1,
-            chi = parameters.chi || 2,
-            psi = parameters.psi || -0.5,
-            sigma = parameters.sigma || 0.5,
-            callback = parameters.callback,
-            temp;
-
-        // initialize simplex.
-        var N = x0.length,
-            simplex = new Array(N + 1);
-        simplex[0] = x0;
-        simplex[0].fx = f(x0);
-        for (var i = 0; i < N; ++i) {
-            var point = x0.slice();
-            point[i] = point[i] ? point[i] * nonZeroDelta : zeroDelta;
-            simplex[i+1] = point;
-            simplex[i+1].fx = f(point);
-        }
-
-        var sortOrder = function(a, b) { return a.fx - b.fx; };
-
-        var centroid = x0.slice(),
-            reflected = x0.slice(),
-            contracted = x0.slice(),
-            expanded = x0.slice();
-
-        for (var iteration = 0; iteration < maxIterations; ++iteration) {
-            simplex.sort(sortOrder);
-            if (callback) {
-                callback(simplex);
-            }
-
-            if (Math.abs(simplex[0].fx - simplex[N].fx) < minErrorDelta) {
-                break;
-            }
-
-            // compute the centroid of all but the worst point in the simplex
-            for (i = 0; i < N; ++i) {
-                centroid[i] = 0;
-                for (var j = 0; j < N; ++j) {
-                    centroid[i] += simplex[j][i];
-                }
-                centroid[i] /= N;
-            }
-
-            // reflect the worst point past the centroid  and compute loss at reflected
-            // point
-            var worst = simplex[N];
-            weightedSum(reflected, 1+rho, centroid, -rho, worst);
-            reflected.fx = f(reflected);
-
-            // if the reflected point is the best seen, then possibly expand
-            if (reflected.fx <= simplex[0].fx) {
-                weightedSum(expanded, 1+chi, centroid, -chi, worst);
-                expanded.fx = f(expanded);
-                if (expanded.fx < reflected.fx) {
-                    temp = simplex[N];
-                    simplex[N] = expanded;
-                    expanded = temp;
-                }  else {
-                    temp = simplex[N];
-                    simplex[N] = reflected;
-                    reflected = temp;
-                }
-            }
-
-            // if the reflected point is worse than the second worst, we need to
-            // contract
-            else if (reflected.fx >= simplex[N-1].fx) {
-                var shouldReduce = false;
-
-                if (reflected.fx <= worst.fx) {
-                    // do an inside contraction
-                    weightedSum(contracted, 1+psi, centroid, -psi, worst);
-                    contracted.fx = f(contracted);
-                    if (contracted.fx < worst.fx) {
-                        temp = simplex[N];
-                        simplex[N] = contracted;
-                        contracted = temp;
-                    } else {
-                        shouldReduce = true;
-                    }
-                } else {
-                    // do an outside contraction
-                    weightedSum(contracted, 1-psi * rho, centroid, psi*rho, worst);
-                    contracted.fx = f(contracted);
-                    if (contracted.fx <= reflected.fx) {
-                        temp = simplex[N];
-                        simplex[N] = contracted;
-                        contracted = temp;
-                    } else {
-                        shouldReduce = true;
-                    }
-                }
-
-                if (shouldReduce) {
-                    // do reduction. doesn't actually happen that often
-                    for (i = 1; i < simplex.length; ++i) {
-                        weightedSum(simplex[i], 1 - sigma, simplex[0], sigma - 1, simplex[i]);
-                        simplex[i].fx = f(simplex[i]);
-                    }
-                }
-            } else {
-                temp = simplex[N];
-                simplex[N] = reflected;
-                reflected = temp;
-            }
-
-        }
-
-        simplex.sort(sortOrder);
-        return {f : simplex[0].fx,
-                solution : simplex[0]};
-    }
-
-    function minimizeConjugateGradient(f, initial, params) {
-        // allocate all memory up front here, keep out of the loop for perfomance
-        // reasons
-        var current = {x: initial.slice(), fx: 0, fxprime: initial.slice()},
-            next = {x: initial.slice(), fx: 0, fxprime: initial.slice()},
-            yk = initial.slice(),
-            pk, temp,
-            a = 1,
-            maxIterations;
-
-        params = params || {};
-        maxIterations = params.maxIterations || initial.length * 5;
-
-        current.fx = f(current.x, current.fxprime);
-        pk = current.fxprime.slice();
-        multiplyBy(pk, -1);
-
-        for (var i = 0; i < maxIterations; ++i) {
-            if (params.history) {
-                params.history.push({x: current.x.slice(),
-                                     fx: current.fx,
-                                     fxprime: current.fxprime.slice()});
-            }
-
-            a = wolfeLineSearch(f, pk, current, next, a);
-            if (!a) {
-                // faiiled to find point that satifies wolfe conditions.
-                // reset direction for next iteration
-                for (var j = 0; j < pk.length; ++j) {
-                    pk[j] = -1 * current.fxprime[j];
-                }
-            } else {
-                // update direction using Polak–Ribiere CG method
-                weightedSum(yk, 1, next.fxprime, -1, current.fxprime);
-
-                var delta_k = dot(current.fxprime, current.fxprime),
-                    beta_k = Math.max(0, dot(yk, next.fxprime) / delta_k);
-
-                weightedSum(pk, beta_k, pk, -1, next.fxprime);
-
-                temp = current;
-                current = next;
-                next = temp;
-            }
-
-            if (norm2(current.fxprime) <= 1e-5) {
-                break;
-            }
-        }
-
-        if (params.history) {
-            params.history.push({x: current.x.slice(),
-                                 fx: current.fx,
-                                 fxprime: current.fxprime.slice()});
-        }
-
-        return current;
-    }
-
-    var c1 = 1e-6;
-    var c2 = 0.1;
-    /// searches along line 'pk' for a point that satifies the wolfe conditions
-    /// See 'Numerical Optimization' by Nocedal and Wright p59-60
-    function wolfeLineSearch(f, pk, current, next, a) {
-        var phi0 = current.fx, phiPrime0 = dot(current.fxprime, pk),
-            phi = phi0, phi_old = phi0,
-            phiPrime = phiPrime0,
-            a0 = 0;
-
-        a = a || 1;
-
-        function zoom(a_lo, a_high, phi_lo) {
-            for (var iteration = 0; iteration < 16; ++iteration) {
-                a = (a_lo + a_high)/2;
-                weightedSum(next.x, 1.0, current.x, a, pk);
-                phi = next.fx = f(next.x, next.fxprime);
-                phiPrime = dot(next.fxprime, pk);
-
-                if ((phi > (phi0 + c1 * a * phiPrime0)) ||
-                    (phi >= phi_lo)) {
-                    a_high = a;
-
-                } else  {
-                    if (Math.abs(phiPrime) <= -c2 * phiPrime0) {
-                        return a;
-                    }
-
-                    if (phiPrime * (a_high - a_lo) >=0) {
-                        a_high = a_lo;
-                    }
-
-                    a_lo = a;
-                    phi_lo = phi;
-                }
-            }
-
-            return 0;
-        }
-
-        for (var iteration = 0; iteration < 10; ++iteration) {
-            weightedSum(next.x, 1.0, current.x, a, pk);
-            phi = next.fx = f(next.x, next.fxprime);
-            phiPrime = dot(next.fxprime, pk);
-            if ((phi > (phi0 + c1 * a * phiPrime0)) ||
-                (iteration && (phi >= phi_old))) {
-                return zoom(a0, a, phi_old);
-            }
-
-            if (Math.abs(phiPrime) <= -c2 * phiPrime0) {
-                return a;
-            }
-
-            if (phiPrime >= 0 ) {
-                return zoom(a, a0, phi);
-            }
-
-            phi_old = phi;
-            a0 = a;
-            a *= 2;
-        }
-
-        return 0;
-    }
+    typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports, require('d3-selection'), require('d3-transition')) :
+    typeof define === 'function' && define.amd ? define(['exports', 'd3-selection', 'd3-transition'], factory) :
+    (factory((global.venn = global.venn || {}),global.d3,global.d3));
+}(this, function (exports,d3Selection,d3Transition) { 'use strict';
 
     var SMALL = 1e-10;
 
@@ -384,9 +75,12 @@
                         }
                     }
                 }
-                arcs.push(arc);
-                arcArea += circleArea(arc.circle.radius, arc.width);
-                p2 = p1;
+
+                if (arc !== null) {
+                    arcs.push(arc);
+                    arcArea += circleArea(arc.circle.radius, arc.width);
+                    p2 = p1;
+                }
             }
         } else {
             // no intersection points, is either disjoint - or is completely
@@ -533,6 +227,343 @@
         return center;
     }
 
+    /** finds the zeros of a function, given two starting points (which must
+     * have opposite signs */
+    function bisect(f, a, b, parameters) {
+        parameters = parameters || {};
+        var maxIterations = parameters.maxIterations || 100,
+            tolerance = parameters.tolerance || 1e-10,
+            fA = f(a),
+            fB = f(b),
+            delta = b - a;
+
+        if (fA * fB > 0) {
+            throw "Initial bisect points must have opposite signs";
+        }
+
+        if (fA === 0) return a;
+        if (fB === 0) return b;
+
+        for (var i = 0; i < maxIterations; ++i) {
+            delta /= 2;
+            var mid = a + delta,
+                fMid = f(mid);
+
+            if (fMid * fA >= 0) {
+                a = mid;
+            }
+
+            if ((Math.abs(delta) < tolerance) || (fMid === 0)) {
+                return mid;
+            }
+        }
+        return a + delta;
+    }
+
+    // need some basic operations on vectors, rather than adding a dependency,
+    // just define here
+    function zeros(x) { var r = new Array(x); for (var i = 0; i < x; ++i) { r[i] = 0; } return r; }
+    function zerosM(x,y) { return zeros(x).map(function() { return zeros(y); }); }
+
+    function dot(a, b) {
+        var ret = 0;
+        for (var i = 0; i < a.length; ++i) {
+            ret += a[i] * b[i];
+        }
+        return ret;
+    }
+
+    function norm2(a)  {
+        return Math.sqrt(dot(a, a));
+    }
+
+    function scale(ret, value, c) {
+        for (var i = 0; i < value.length; ++i) {
+            ret[i] = value[i] * c;
+        }
+    }
+
+    function weightedSum(ret, w1, v1, w2, v2) {
+        for (var j = 0; j < ret.length; ++j) {
+            ret[j] = w1 * v1[j] + w2 * v2[j];
+        }
+    }
+
+    /** minimizes a function using the downhill simplex method */
+    function nelderMead(f, x0, parameters) {
+        parameters = parameters || {};
+
+        var maxIterations = parameters.maxIterations || x0.length * 200,
+            nonZeroDelta = parameters.nonZeroDelta || 1.05,
+            zeroDelta = parameters.zeroDelta || 0.001,
+            minErrorDelta = parameters.minErrorDelta || 1e-6,
+            minTolerance = parameters.minErrorDelta || 1e-5,
+            rho = (parameters.rho !== undefined) ? parameters.rho : 1,
+            chi = (parameters.chi !== undefined) ? parameters.chi : 2,
+            psi = (parameters.psi !== undefined) ? parameters.psi : -0.5,
+            sigma = (parameters.sigma !== undefined) ? parameters.sigma : 0.5,
+            maxDiff;
+
+        // initialize simplex.
+        var N = x0.length,
+            simplex = new Array(N + 1);
+        simplex[0] = x0;
+        simplex[0].fx = f(x0);
+        simplex[0].id = 0;
+        for (var i = 0; i < N; ++i) {
+            var point = x0.slice();
+            point[i] = point[i] ? point[i] * nonZeroDelta : zeroDelta;
+            simplex[i+1] = point;
+            simplex[i+1].fx = f(point);
+            simplex[i+1].id = i+1;
+        }
+
+        function updateSimplex(value) {
+            for (var i = 0; i < value.length; i++) {
+                simplex[N][i] = value[i];
+            }
+            simplex[N].fx = value.fx;
+        }
+
+        var sortOrder = function(a, b) { return a.fx - b.fx; };
+
+        var centroid = x0.slice(),
+            reflected = x0.slice(),
+            contracted = x0.slice(),
+            expanded = x0.slice();
+
+        for (var iteration = 0; iteration < maxIterations; ++iteration) {
+            simplex.sort(sortOrder);
+
+            if (parameters.history) {
+                // copy the simplex (since later iterations will mutate) and
+                // sort it to have a consistent order between iterations
+                var sortedSimplex = simplex.map(function (x) {
+                    var state = x.slice();
+                    state.fx = x.fx;
+                    state.id = x.id;
+                    return state;
+                });
+                sortedSimplex.sort(function(a,b) { return a.id - b.id; });
+
+                parameters.history.push({x: simplex[0].slice(),
+                                         fx: simplex[0].fx,
+                                         simplex: sortedSimplex});
+            }
+
+            maxDiff = 0;
+            for (i = 0; i < N; ++i) {
+                maxDiff = Math.max(maxDiff, Math.abs(simplex[0][i] - simplex[1][i]));
+            }
+
+            if ((Math.abs(simplex[0].fx - simplex[N].fx) < minErrorDelta) &&
+                (maxDiff < minTolerance)) {
+                break;
+            }
+
+            // compute the centroid of all but the worst point in the simplex
+            for (i = 0; i < N; ++i) {
+                centroid[i] = 0;
+                for (var j = 0; j < N; ++j) {
+                    centroid[i] += simplex[j][i];
+                }
+                centroid[i] /= N;
+            }
+
+            // reflect the worst point past the centroid  and compute loss at reflected
+            // point
+            var worst = simplex[N];
+            weightedSum(reflected, 1+rho, centroid, -rho, worst);
+            reflected.fx = f(reflected);
+
+            // if the reflected point is the best seen, then possibly expand
+            if (reflected.fx < simplex[0].fx) {
+                weightedSum(expanded, 1+chi, centroid, -chi, worst);
+                expanded.fx = f(expanded);
+                if (expanded.fx < reflected.fx) {
+                    updateSimplex(expanded);
+                }  else {
+                    updateSimplex(reflected);
+                }
+            }
+
+            // if the reflected point is worse than the second worst, we need to
+            // contract
+            else if (reflected.fx >= simplex[N-1].fx) {
+                var shouldReduce = false;
+
+                if (reflected.fx > worst.fx) {
+                    // do an inside contraction
+                    weightedSum(contracted, 1+psi, centroid, -psi, worst);
+                    contracted.fx = f(contracted);
+                    if (contracted.fx < worst.fx) {
+                        updateSimplex(contracted);
+                    } else {
+                        shouldReduce = true;
+                    }
+                } else {
+                    // do an outside contraction
+                    weightedSum(contracted, 1-psi * rho, centroid, psi*rho, worst);
+                    contracted.fx = f(contracted);
+                    if (contracted.fx < reflected.fx) {
+                        updateSimplex(contracted);
+                    } else {
+                        shouldReduce = true;
+                    }
+                }
+
+                if (shouldReduce) {
+                    // if we don't contract here, we're done
+                    if (sigma >= 1) break;
+
+                    // do a reduction
+                    for (i = 1; i < simplex.length; ++i) {
+                        weightedSum(simplex[i], 1 - sigma, simplex[0], sigma, simplex[i]);
+                        simplex[i].fx = f(simplex[i]);
+                    }
+                }
+            } else {
+                updateSimplex(reflected);
+            }
+        }
+
+        simplex.sort(sortOrder);
+        return {fx : simplex[0].fx,
+                x : simplex[0]};
+    }
+
+    /// searches along line 'pk' for a point that satifies the wolfe conditions
+    /// See 'Numerical Optimization' by Nocedal and Wright p59-60
+    /// f : objective function
+    /// pk : search direction
+    /// current: object containing current gradient/loss
+    /// next: output: contains next gradient/loss
+    /// returns a: step size taken
+    function wolfeLineSearch(f, pk, current, next, a, c1, c2) {
+        var phi0 = current.fx, phiPrime0 = dot(current.fxprime, pk),
+            phi = phi0, phi_old = phi0,
+            phiPrime = phiPrime0,
+            a0 = 0;
+
+        a = a || 1;
+        c1 = c1 || 1e-6;
+        c2 = c2 || 0.1;
+
+        function zoom(a_lo, a_high, phi_lo) {
+            for (var iteration = 0; iteration < 16; ++iteration) {
+                a = (a_lo + a_high)/2;
+                weightedSum(next.x, 1.0, current.x, a, pk);
+                phi = next.fx = f(next.x, next.fxprime);
+                phiPrime = dot(next.fxprime, pk);
+
+                if ((phi > (phi0 + c1 * a * phiPrime0)) ||
+                    (phi >= phi_lo)) {
+                    a_high = a;
+
+                } else  {
+                    if (Math.abs(phiPrime) <= -c2 * phiPrime0) {
+                        return a;
+                    }
+
+                    if (phiPrime * (a_high - a_lo) >=0) {
+                        a_high = a_lo;
+                    }
+
+                    a_lo = a;
+                    phi_lo = phi;
+                }
+            }
+
+            return 0;
+        }
+
+        for (var iteration = 0; iteration < 10; ++iteration) {
+            weightedSum(next.x, 1.0, current.x, a, pk);
+            phi = next.fx = f(next.x, next.fxprime);
+            phiPrime = dot(next.fxprime, pk);
+            if ((phi > (phi0 + c1 * a * phiPrime0)) ||
+                (iteration && (phi >= phi_old))) {
+                return zoom(a0, a, phi_old);
+            }
+
+            if (Math.abs(phiPrime) <= -c2 * phiPrime0) {
+                return a;
+            }
+
+            if (phiPrime >= 0 ) {
+                return zoom(a, a0, phi);
+            }
+
+            phi_old = phi;
+            a0 = a;
+            a *= 2;
+        }
+
+        return a;
+    }
+
+    function conjugateGradient(f, initial, params) {
+        // allocate all memory up front here, keep out of the loop for perfomance
+        // reasons
+        var current = {x: initial.slice(), fx: 0, fxprime: initial.slice()},
+            next = {x: initial.slice(), fx: 0, fxprime: initial.slice()},
+            yk = initial.slice(),
+            pk, temp,
+            a = 1,
+            maxIterations;
+
+        params = params || {};
+        maxIterations = params.maxIterations || initial.length * 20;
+
+        current.fx = f(current.x, current.fxprime);
+        pk = current.fxprime.slice();
+        scale(pk, current.fxprime,-1);
+
+        for (var i = 0; i < maxIterations; ++i) {
+            a = wolfeLineSearch(f, pk, current, next, a);
+
+            // todo: history in wrong spot?
+            if (params.history) {
+                params.history.push({x: current.x.slice(),
+                                     fx: current.fx,
+                                     fxprime: current.fxprime.slice(),
+                                     alpha: a});
+            }
+
+            if (!a) {
+                // faiiled to find point that satifies wolfe conditions.
+                // reset direction for next iteration
+                scale(pk, current.fxprime, -1);
+
+            } else {
+                // update direction using Polak–Ribiere CG method
+                weightedSum(yk, 1, next.fxprime, -1, current.fxprime);
+
+                var delta_k = dot(current.fxprime, current.fxprime),
+                    beta_k = Math.max(0, dot(yk, next.fxprime) / delta_k);
+
+                weightedSum(pk, beta_k, pk, -1, next.fxprime);
+
+                temp = current;
+                current = next;
+                next = temp;
+            }
+
+            if (norm2(current.fxprime) <= 1e-5) {
+                break;
+            }
+        }
+
+        if (params.history) {
+            params.history.push({x: current.x.slice(),
+                                 fx: current.fx,
+                                 fxprime: current.fxprime.slice(),
+                                 alpha: a});
+        }
+
+        return current;
+    }
+
     /** given a list of set objects, and their corresponding overlaps.
     updates the (x, y, radius) attribute on each set such that their positions
     roughly correspond to the desired overlaps */
@@ -559,7 +590,7 @@
 
         // optimize initial layout from our loss function
         var totalFunctionCalls = 0;
-        var solution = fmin(
+        var solution = nelderMead(
             function(values) {
                 totalFunctionCalls += 1;
                 var current = {};
@@ -577,7 +608,7 @@
             parameters);
 
         // transform solution vector back to x/y points
-        var positions = solution.solution;
+        var positions = solution.x;
         for (var i = 0; i < setids.length; ++i) {
             setid = setids[i];
             circles[setid].x = positions[2 * i];
@@ -759,7 +790,7 @@
         for (i = 0; i < restarts; ++i) {
             var initial = zeros(distances.length*2).map(Math.random);
 
-            current = minimizeConjugateGradient(obj, initial, params);
+            current = conjugateGradient(obj, initial, params);
             if (!best || (current.fx < best.fx)) {
                 best = current;
             }
@@ -779,7 +810,7 @@
 
         if (params.history) {
             for (i = 0; i < params.history.length; ++i) {
-                multiplyBy(params.history[i].x, norm);
+                scale(params.history[i].x, norm);
             }
         }
         return circles;
@@ -915,35 +946,6 @@
             positionSet(bestPoint, setIndex);
         }
 
-        return circles;
-    }
-
-    /// Uses multidimensional scaling to approximate a first layout here
-    function classicMDSLayout(areas) {
-        // bidirectionally map sets to a rowid  (so we can create a matrix)
-        var sets = [], setids = {};
-        for (var i = 0; i < areas.length; ++i ) {
-            var area = areas[i];
-            if (area.sets.length == 1) {
-                setids[area.sets[0]] = sets.length;
-                sets.push(area);
-            }
-        }
-
-        // get the distance matrix, and use to position sets
-        var distances = getDistanceMatrices(areas, sets, setids).distances;
-        var positions = mds.classic(distances);
-
-        // translate rows back to (x,y,radius) coordinates
-        var circles = {};
-        for (i = 0; i < sets.length; ++i) {
-            var set = sets[i];
-            circles[set.sets[0]] = {
-                x: positions[i][0],
-                y: positions[i][1],
-                radius:  Math.sqrt(set.size / Math.PI)
-            };
-        }
         return circles;
     }
 
@@ -1216,6 +1218,8 @@
         return scaled;
     }
 
+    /*global console:true*/
+
     function VennDiagram() {
         var width = 600,
             height = 350,
@@ -1227,7 +1231,27 @@
             styled = true,
             fontSize = null,
             orientationOrder = null,
-            colours = d3.scale.category10(),
+
+            // mimic the behaviour of d3.scale.category10 from the previous
+            // version of d3
+            colourMap = {},
+
+            // so this is the same as d3.schemeCategory10, which is only defined in d3 4.0
+            // since we can support older versions of d3 as long as we don't force this,
+            // I'm hackily redefining below. TODO: remove this and change to d3.schemeCategory10
+            colourScheme = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"],
+            colourIndex = 0,
+            colours = function(key) {
+                if (key in colourMap) {
+                    return colourMap[key];
+                }
+                var ret = colourMap[key] = colourScheme[colourIndex];
+                colourIndex += 1;
+                if (colourIndex >= colourScheme.length) {
+                    colourIndex = 0;
+                }
+                return ret;
+            },
             layoutFunction = venn;
 
         function chart(selection) {
@@ -1241,18 +1265,18 @@
             var circles = scaleSolution(solution, width, height, padding);
             var textCentres = computeTextCentres(circles, data);
 
-            // draw out a svg
-            var svg = selection.selectAll("svg").data([circles]);
-            svg.enter().append("svg");
+            // create svg if not already existing
+            selection.selectAll("svg").data([circles]).enter().append("svg");
 
-            svg.attr("width", width)
-               .attr("height", height);
+            var svg = selection.select("svg")
+                .attr("width", width)
+                .attr("height", height);
 
             // to properly transition intersection areas, we need the
             // previous circles locations. load from elements
             var previous = {}, hasPrevious = false;
-            svg.selectAll("g").each(function (d) {
-                var path = d3.select(this).select("path").attr("d");
+            svg.selectAll(".venn-area path").each(function (d) {
+                var path = d3Selection.select(this).attr("d");
                 if ((d.sets.length == 1) && path) {
                     hasPrevious = true;
                     previous[d.sets[0]] = circleFromPath(path);
@@ -1280,7 +1304,7 @@
             };
 
             // update data, joining on the set ids
-            var nodes = svg.selectAll("g")
+            var nodes = svg.selectAll(".venn-area")
                 .data(data, function(d) { return d.sets; });
 
             // create new nodes
@@ -1315,31 +1339,45 @@
                     .style("fill", function(d) { return d.sets.length == 1 ? colours(label(d)) : "#444"; });
             }
 
-            // update existing
-            var update = nodes.transition("venn").duration(hasPrevious ? duration : 0);
-            update.select("path")
-                .attrTween("d", pathTween);
+            // update existing, using pathTween if necessary
+            var update = selection;
+            if (hasPrevious) {
+                update = selection.transition("venn").duration(duration);
+                update.selectAll("path")
+                    .attrTween("d", pathTween);
+            } else {
+                update.selectAll("path")
+                    .attr("d", function(d) {
+                        return intersectionAreaPath(d.sets.map(function (set) { return circles[set]; }));
+                    });
+            }
 
-            var updateText = update.select("text")
+            var updateText = update.selectAll("text")
+                .filter(function (d) { return d.sets in textCentres; })
                 .text(function (d) { return label(d); } )
-                .attr("x", function(d) {
-                    return Math.floor(textCentres[d.sets].x);
-                })
-                .attr("y", function(d) {
-                    return Math.floor(textCentres[d.sets].y);
-                });
+                .attr("x", function(d) { return Math.floor(textCentres[d.sets].x);})
+                .attr("y", function(d) { return Math.floor(textCentres[d.sets].y);});
 
             if (wrap) {
-                updateText.each("end", wrapText(circles, label));
+                if (hasPrevious) {
+                    // d3 4.0 uses 'on' for events on transitions,
+                    // but d3 3.0 used 'each' instead. switch appropiately
+                    if ('on' in updateText) {
+                        updateText.on("end", wrapText(circles, label));
+                    } else {
+                        updateText.each("end", wrapText(circles, label));
+                    }
+                } else {
+                    updateText.each(wrapText(circles, label));
+                }
             }
 
             // remove old
             var exit = nodes.exit().transition('venn').duration(duration).remove();
-            exit.select("path")
+            exit.selectAll("path")
                 .attrTween("d", pathTween);
 
-            var exitText = exit.select("text")
-                .text(function (d) { return label(d); } )
+            var exitText = exit.selectAll("text")
                 .attr("x", width/2)
                 .attr("y", height/2);
 
@@ -1452,7 +1490,7 @@
     // this seems to be one of those things that should be easy but isn't
     function wrapText(circles, labeller) {
         return function() {
-            var text = d3.select(this),
+            var text = d3Selection.select(this),
                 data = text.datum(),
                 width = circles[data.sets[0]].radius || 50,
                 label = labeller(data) || '';
@@ -1538,10 +1576,10 @@
         }
 
         // maximize the margin numerically
-        var solution = fmin(
+        var solution = nelderMead(
                     function(p) { return -1 * circleMargin({x: p[0], y: p[1]}, interior, exterior); },
                     [initial.x, initial.y],
-                    {maxIterations:500, minErrorDelta:1e-10}).solution;
+                    {maxIterations:500, minErrorDelta:1e-10}).x;
         var ret = {x: solution[0], y: solution[1]};
 
         // check solution, fallback as needed (happens if fully overlapped
@@ -1742,12 +1780,6 @@
         }
     }
 
-    var version = "0.2.8";
-
-    exports.version = version;
-    exports.fmin = fmin;
-    exports.minimizeConjugateGradient = minimizeConjugateGradient;
-    exports.bisect = bisect;
     exports.intersectionArea = intersectionArea;
     exports.circleCircleIntersection = circleCircleIntersection;
     exports.circleOverlap = circleOverlap;
@@ -1756,7 +1788,6 @@
     exports.circleIntegral = circleIntegral;
     exports.venn = venn;
     exports.greedyLayout = greedyLayout;
-    exports.classicMDSLayout = classicMDSLayout;
     exports.scaleSolution = scaleSolution;
     exports.normalizeSolution = normalizeSolution;
     exports.bestInitialLayout = bestInitialLayout;
@@ -1771,5 +1802,7 @@
     exports.circlePath = circlePath;
     exports.circleFromPath = circleFromPath;
     exports.intersectionAreaPath = intersectionAreaPath;
+
+    Object.defineProperty(exports, '__esModule', { value: true });
 
 }));

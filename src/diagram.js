@@ -1,8 +1,11 @@
+import {select, selectAll} from "d3-selection";
+import {transition} from "d3-transition";
+
 import {venn, normalizeSolution, scaleSolution} from "./layout";
 import {intersectionArea, distance, getCenter} from "./circleintersection";
-import {fmin} from "./fmin";
+import {nelderMead} from "../node_modules/fmin/index.js";
 
-/*global d3 console:true*/
+/*global console:true*/
 
 export function VennDiagram() {
     var width = 600,
@@ -15,7 +18,27 @@ export function VennDiagram() {
         styled = true,
         fontSize = null,
         orientationOrder = null,
-        colours = d3.scale.category10(),
+
+        // mimic the behaviour of d3.scale.category10 from the previous
+        // version of d3
+        colourMap = {},
+
+        // so this is the same as d3.schemeCategory10, which is only defined in d3 4.0
+        // since we can support older versions of d3 as long as we don't force this,
+        // I'm hackily redefining below. TODO: remove this and change to d3.schemeCategory10
+        colourScheme = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"],
+        colourIndex = 0,
+        colours = function(key) {
+            if (key in colourMap) {
+                return colourMap[key];
+            }
+            var ret = colourMap[key] = colourScheme[colourIndex];
+            colourIndex += 1;
+            if (colourIndex >= colourScheme.length) {
+                colourIndex = 0;
+            }
+            return ret;
+        },
         layoutFunction = venn;
 
     function chart(selection) {
@@ -29,18 +52,18 @@ export function VennDiagram() {
         var circles = scaleSolution(solution, width, height, padding);
         var textCentres = computeTextCentres(circles, data);
 
-        // draw out a svg
-        var svg = selection.selectAll("svg").data([circles]);
-        svg.enter().append("svg");
+        // create svg if not already existing
+        selection.selectAll("svg").data([circles]).enter().append("svg");
 
-        svg.attr("width", width)
-           .attr("height", height);
+        var svg = selection.select("svg")
+            .attr("width", width)
+            .attr("height", height);
 
         // to properly transition intersection areas, we need the
         // previous circles locations. load from elements
         var previous = {}, hasPrevious = false;
-        svg.selectAll("g").each(function (d) {
-            var path = d3.select(this).select("path").attr("d");
+        svg.selectAll(".venn-area path").each(function (d) {
+            var path = select(this).attr("d");
             if ((d.sets.length == 1) && path) {
                 hasPrevious = true;
                 previous[d.sets[0]] = circleFromPath(path);
@@ -68,7 +91,7 @@ export function VennDiagram() {
         };
 
         // update data, joining on the set ids
-        var nodes = svg.selectAll("g")
+        var nodes = svg.selectAll(".venn-area")
             .data(data, function(d) { return d.sets; });
 
         // create new nodes
@@ -103,31 +126,45 @@ export function VennDiagram() {
                 .style("fill", function(d) { return d.sets.length == 1 ? colours(label(d)) : "#444"; });
         }
 
-        // update existing
-        var update = nodes.transition("venn").duration(hasPrevious ? duration : 0);
-        update.select("path")
-            .attrTween("d", pathTween);
+        // update existing, using pathTween if necessary
+        var update = selection;
+        if (hasPrevious) {
+            update = selection.transition("venn").duration(duration);
+            update.selectAll("path")
+                .attrTween("d", pathTween);
+        } else {
+            update.selectAll("path")
+                .attr("d", function(d) {
+                    return intersectionAreaPath(d.sets.map(function (set) { return circles[set]; }));
+                });
+        }
 
-        var updateText = update.select("text")
+        var updateText = update.selectAll("text")
+            .filter(function (d) { return d.sets in textCentres; })
             .text(function (d) { return label(d); } )
-            .attr("x", function(d) {
-                return Math.floor(textCentres[d.sets].x);
-            })
-            .attr("y", function(d) {
-                return Math.floor(textCentres[d.sets].y);
-            });
+            .attr("x", function(d) { return Math.floor(textCentres[d.sets].x);})
+            .attr("y", function(d) { return Math.floor(textCentres[d.sets].y);});
 
         if (wrap) {
-            updateText.each("end", wrapText(circles, label));
+            if (hasPrevious) {
+                // d3 4.0 uses 'on' for events on transitions,
+                // but d3 3.0 used 'each' instead. switch appropiately
+                if ('on' in updateText) {
+                    updateText.on("end", wrapText(circles, label));
+                } else {
+                    updateText.each("end", wrapText(circles, label));
+                }
+            } else {
+                updateText.each(wrapText(circles, label));
+            }
         }
 
         // remove old
         var exit = nodes.exit().transition('venn').duration(duration).remove();
-        exit.select("path")
+        exit.selectAll("path")
             .attrTween("d", pathTween);
 
-        var exitText = exit.select("text")
-            .text(function (d) { return label(d); } )
+        var exitText = exit.selectAll("text")
             .attr("x", width/2)
             .attr("y", height/2);
 
@@ -240,7 +277,7 @@ export function VennDiagram() {
 // this seems to be one of those things that should be easy but isn't
 export function wrapText(circles, labeller) {
     return function() {
-        var text = d3.select(this),
+        var text = select(this),
             data = text.datum(),
             width = circles[data.sets[0]].radius || 50,
             label = labeller(data) || '';
@@ -326,10 +363,10 @@ export function computeTextCentre(interior, exterior) {
     }
 
     // maximize the margin numerically
-    var solution = fmin(
+    var solution = nelderMead(
                 function(p) { return -1 * circleMargin({x: p[0], y: p[1]}, interior, exterior); },
                 [initial.x, initial.y],
-                {maxIterations:500, minErrorDelta:1e-10}).solution;
+                {maxIterations:500, minErrorDelta:1e-10}).x;
     var ret = {x: solution[0], y: solution[1]};
 
     // check solution, fallback as needed (happens if fully overlapped
